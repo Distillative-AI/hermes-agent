@@ -174,6 +174,19 @@ def _make_fake_mautrix():
 
     mautrix_crypto_store.MemoryCryptoStore = MemoryCryptoStore
 
+    # --- mautrix.crypto.attachments ---
+    mautrix_crypto_attachments = types.ModuleType("mautrix.crypto.attachments")
+
+    def encrypt_attachment(data):
+        encrypted_file = MagicMock()
+        encrypted_file.serialize.return_value = {
+            "key": {"k": "testkey"}, "iv": "testiv",
+            "hashes": {"sha256": "testhash"}, "v": "v2",
+        }
+        return (b"ciphertext_" + data, encrypted_file)
+
+    mautrix_crypto_attachments.encrypt_attachment = encrypt_attachment
+
     # --- mautrix.crypto.store.asyncpg ---
     mautrix_crypto_store_asyncpg = types.ModuleType("mautrix.crypto.store.asyncpg")
 
@@ -214,6 +227,7 @@ def _make_fake_mautrix():
         "mautrix.client.dispatcher": mautrix_client_dispatcher,
         "mautrix.client.state_store": mautrix_client_state_store,
         "mautrix.crypto": mautrix_crypto,
+        "mautrix.crypto.attachments": mautrix_crypto_attachments,
         "mautrix.crypto.store": mautrix_crypto_store,
         "mautrix.crypto.store.asyncpg": mautrix_crypto_store_asyncpg,
         "mautrix.util": mautrix_util,
@@ -1161,6 +1175,56 @@ class TestMatrixSyncLoop:
         fake_client.sync.assert_awaited_once()
         fake_client.handle_sync.assert_called_once()
         mock_sync_store.put_next_batch.assert_awaited_once_with("s1234")
+
+
+class TestMatrixUploadAndSend:
+    @pytest.mark.asyncio
+    async def test_upload_unencrypted_room_uses_plain_url(self):
+        """Unencrypted rooms should use plain 'url' key."""
+        adapter = _make_adapter()
+        adapter._encryption = True
+        mock_client = MagicMock()
+        mock_client.crypto = object()
+        mock_client.state_store = MagicMock()
+        mock_client.state_store.is_encrypted = AsyncMock(return_value=False)
+        mock_client.upload_media = AsyncMock(return_value="mxc://example.org/plain")
+        mock_client.send_message_event = AsyncMock(return_value="$event")
+        adapter._client = mock_client
+
+        result = await adapter._upload_and_send(
+            "!room:example.org", b"hello", "test.txt", "text/plain", "m.file",
+        )
+
+        assert result.success is True
+        sent = mock_client.send_message_event.await_args.args[2]
+        assert sent["url"] == "mxc://example.org/plain"
+        assert "file" not in sent
+
+    @pytest.mark.asyncio
+    async def test_upload_encrypted_room_uses_file_payload(self):
+        """Encrypted rooms should use 'file' key with crypto metadata."""
+        adapter = _make_adapter()
+        adapter._encryption = True
+        mock_client = MagicMock()
+        mock_client.crypto = object()
+        mock_client.state_store = MagicMock()
+        mock_client.state_store.is_encrypted = AsyncMock(return_value=True)
+        mock_client.upload_media = AsyncMock(return_value="mxc://example.org/enc")
+        mock_client.send_message_event = AsyncMock(return_value="$event")
+        adapter._client = mock_client
+
+        result = await adapter._upload_and_send(
+            "!room:example.org", b"secret", "secret.txt", "text/plain", "m.file",
+        )
+
+        assert result.success is True
+        # Should have uploaded ciphertext, not plaintext
+        uploaded_data = mock_client.upload_media.await_args.args[0]
+        assert uploaded_data != b"secret"
+        sent = mock_client.send_message_event.await_args.args[2]
+        assert "url" not in sent
+        assert "file" in sent
+        assert sent["file"]["url"] == "mxc://example.org/enc"
 
 
 class TestMatrixEncryptedSendFallback:
