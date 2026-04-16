@@ -1177,6 +1177,34 @@ class TestMatrixSyncLoop:
         mock_sync_store.put_next_batch.assert_awaited_once_with("s1234")
 
 
+class TestMatrixStopTyping:
+    def setup_method(self):
+        self.adapter = _make_adapter()
+        self.adapter._client = None
+
+    @pytest.mark.asyncio
+    async def test_stop_typing_calls_set_typing_with_zero_timeout(self):
+        mock_client = MagicMock()
+        mock_client.set_typing = AsyncMock()
+        self.adapter._client = mock_client
+        await self.adapter.stop_typing("!room:example.org")
+        mock_client.set_typing.assert_awaited_once()
+        call_kwargs = mock_client.set_typing.await_args
+        assert call_kwargs.kwargs.get("timeout") == 0 or call_kwargs.args[-1] == 0
+
+    @pytest.mark.asyncio
+    async def test_stop_typing_no_client_is_noop(self):
+        self.adapter._client = None
+        await self.adapter.stop_typing("!room:example.org")  # should not raise
+
+    @pytest.mark.asyncio
+    async def test_stop_typing_suppresses_exceptions(self):
+        mock_client = MagicMock()
+        mock_client.set_typing = AsyncMock(side_effect=Exception("network"))
+        self.adapter._client = mock_client
+        await self.adapter.stop_typing("!room:example.org")  # should not raise
+
+
 class TestMatrixUploadAndSend:
     @pytest.mark.asyncio
     async def test_upload_unencrypted_room_uses_plain_url(self):
